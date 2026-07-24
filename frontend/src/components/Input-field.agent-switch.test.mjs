@@ -24,3 +24,18 @@ test('selecting an agent leaves web search off until the user enables it', () =>
   assert.doesNotMatch(handleSelectAgent, /agentWebSearch/)
   assert.doesNotMatch(handleSelectAgent, /settingsStore\.toggleWebSearch/)
 })
+
+test('shared agents keep a selectable path back to their source model', () => {
+  assert.match(
+    inputField,
+    /const sharedAgentDefaultModelId = computed\(\(\) => \{[\s\S]*?settingsStore\.selectedAgentSourceTenantId[\s\S]*?availableModels\.value\.some\(model => model\.id === modelId\)/
+  )
+  assert.match(
+    inputField,
+    /const restoreSharedAgentDefaultModel = \(\) => \{[\s\S]*?selectedModelId\.value = modelId;[\s\S]*?showModelSelector\.value = false;/
+  )
+  assert.match(
+    inputField,
+    /v-if="sharedAgentDefaultModelId"[\s\S]*?@click="restoreSharedAgentDefaultModel"[\s\S]*?\$t\('input\.sharedAgentModelLabel'\)/
+  )
+})

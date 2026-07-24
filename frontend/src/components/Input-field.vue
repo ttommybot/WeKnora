@@ -1021,6 +1021,29 @@ const selectedModel = computed(() => {
   return availableModels.value.find(model => model.id === selectedModelId.value);
 });
 
+// A shared agent can reference a model owned by its source workspace. That
+// model is intentionally absent from the current workspace's model list, so
+// expose a synthetic option that lets the user return to the agent default
+// after temporarily selecting one of their own models.
+const sharedAgentDefaultModelId = computed(() => {
+  const modelId = agentModelId.value?.trim() || '';
+  if (!settingsStore.selectedAgentSourceTenantId || !modelId) return '';
+  return availableModels.value.some(model => model.id === modelId) ? '' : modelId;
+});
+
+const restoreSharedAgentDefaultModel = () => {
+  const modelId = sharedAgentDefaultModelId.value;
+  if (!modelId) return;
+
+  selectedModelId.value = modelId;
+  showModelSelector.value = false;
+  settingsStore.updateConversationModels({
+    summaryModelId: modelId,
+    selectedChatModelId: modelId,
+    rerankModelId: '',
+  });
+};
+
 // 模型展示名：本空间列表中有则用名称；若为共享智能体且其 model_id 不在本空间列表中则显示“共享智能体配置的模型”
 const selectedModelDisplayName = computed(() => {
   if (selectedModel.value) return modelDisplayName(selectedModel.value);
@@ -2656,6 +2679,18 @@ defineExpose({
                 </button>
               </div>
               <div class="model-selector-content">
+                <div v-if="sharedAgentDefaultModelId" class="model-option"
+                  :class="{ selected: sharedAgentDefaultModelId === selectedModelId }"
+                  @click="restoreSharedAgentDefaultModel">
+                  <div class="model-option-left">
+                    <div class="model-option-icon">
+                      <t-icon name="chat" size="14px" />
+                    </div>
+                    <div class="model-option-name-wrap">
+                      <span class="model-option-name">{{ $t('input.sharedAgentModelLabel') }}</span>
+                    </div>
+                  </div>
+                </div>
                 <div v-for="model in availableModels" :key="model.id" class="model-option"
                   :class="{ selected: model.id === selectedModelId }" @click="handleModelChange(model.id || '')">
                   <div class="model-option-left">
