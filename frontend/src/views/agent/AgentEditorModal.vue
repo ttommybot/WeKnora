@@ -4273,6 +4273,7 @@ const handleSave = async () => {
       await updateAgent(formData.value.id, formData.value);
       MessagePlugin.success(t('agent.messages.updated'));
       emit('success');
+      handleClose();
     }
   } catch (e: any) {
     MessagePlugin.error(e?.message || t('agent.messages.saveFailed'));
