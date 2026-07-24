@@ -16,8 +16,9 @@
                 <div v-if="mode === 'file'" class="files-panel-actions">
                   <span class="files-count">{{ batchItemCount }}</span>
                   <KbUploadSourceDropdown
-                    :accept-file-types="acceptFileTypes"
-                    :supported-file-types="supportedFileTypes"
+                    :accept-file-types="currentAcceptFileTypes"
+                    :supported-file-types="[...currentSupportedFileTypes]"
+                    :file-upload-disabled="parserFileUploadDisabled"
                     :tooltip="t('uploadConfirm.continueAdd')"
                     placement="bottom-left"
                     @files="appendFiles"
@@ -260,8 +261,15 @@ import KBChunkingSettings from '../settings/KBChunkingSettings.vue'
 import KBAdvancedSettings from '../settings/KBAdvancedSettings.vue'
 import GraphSettings from '../settings/GraphSettings.vue'
 import { useChatResourcesStore } from '@/stores/chatResources'
+import { useEditorResourcesStore } from '@/stores/editorResources'
 import { useUIStore } from '@/stores/ui'
 import { formatFileSize, getFileIcon } from '@/utils/files'
+import {
+  completeParserEngineRules,
+  getSupportedParserFileTypes,
+  getUnroutableParserFileTypes,
+  resolveParserEngineForFileType,
+} from '@/utils/parserEngines'
 import { getUploadFileKey } from '../utils/uploadSources'
 import KbUploadSourceDropdown from './KbUploadSourceDropdown.vue'
 import type { KnowledgeProcessOverrides } from '@/types/knowledgeProcess'
@@ -335,6 +343,7 @@ const emit = defineEmits<{
 
 const { t } = useI18n()
 const chatResources = useChatResourcesStore()
+const editorResources = useEditorResourcesStore()
 const uiStore = useUIStore()
 
 const allModels = ref<any[]>([])
@@ -451,23 +460,51 @@ const batchFileExts = computed(() => {
   return [...set]
 })
 
+const currentParserRules = computed(() =>
+  uiState.value.chunkingConfig.parserEngineRules || [],
+)
+
+const currentSupportedFileTypes = computed(() =>
+  getSupportedParserFileTypes(editorResources.parserEngines, currentParserRules.value),
+)
+
+const currentAcceptFileTypes = computed(() =>
+  [...currentSupportedFileTypes.value].map(fileType => `.${fileType}`).join(','),
+)
+
+const parserRoutesUnavailable = computed(() =>
+  getUnroutableParserFileTypes(
+    batchFileExts.value,
+    editorResources.parserEngines,
+    currentParserRules.value,
+  ),
+)
+
+const parserStateUnavailable = computed(() =>
+  editorResources.parserEnginesLoading ||
+  !editorResources.parserEnginesLoaded ||
+  editorResources.parserEnginesLoadFailed,
+)
+
+const parserFileUploadDisabled = computed(() =>
+  parserStateUnavailable.value || currentSupportedFileTypes.value.size === 0,
+)
+
 const hasPdf = computed(() => {
   return batchFileExts.value.includes('pdf')
 })
 
 function resolveEngineForExt(ext: string): string {
-  const rules = uiState.value.chunkingConfig.parserEngineRules
-  let engineKey = 'builtin'
-  let name = t('uploadConfirm.summaryParserBuiltin')
-  if (rules?.length) {
-    for (const rule of rules) {
-      if (rule.file_types.includes(ext)) {
-        engineKey = rule.engine
-        name = getEngineDisplayName(rule.engine)
-        break
-      }
-    }
+  const engine = resolveParserEngineForFileType(
+    ext,
+    editorResources.parserEngines,
+    currentParserRules.value,
+  )
+  if (!engine) {
+    return t('kbSettings.parser.noEngineAvailable')
   }
+  const engineKey = engine.Name
+  const name = getEngineDisplayName(engine.Name)
   if (ext === 'pdf' && uiState.value.pdfForceScanned && engineKey === 'builtin') {
     return `${name} · ${t('uploadConfirm.summaryParserForceScanned')}`
   }
@@ -588,6 +625,10 @@ const showAsrModelError = computed(() => {
 
 const issueSectionKeys = computed(() => {
   const keys = new Set<string>()
+  if (batchFileExts.value.length > 0 &&
+      (parserStateUnavailable.value || parserRoutesUnavailable.value.length > 0)) {
+    keys.add('parser')
+  }
   if (hasImages.value) {
     if (!uiState.value.multimodalConfig.enabled || !uiState.value.multimodalConfig.vllmModelId) {
       keys.add('multimodal')
@@ -608,6 +649,10 @@ const issueSectionKeys = computed(() => {
 const canConfirm = computed(() => {
   if (props.mode === 'file' && batchItemCount.value === 0) return false
   if (props.mode === 'manual' && !props.manualPreview?.content?.trim()) return false
+  if (batchFileExts.value.length > 0 &&
+      (parserStateUnavailable.value || parserRoutesUnavailable.value.length > 0)) {
+    return false
+  }
   if (hasImages.value) {
     if (!uiState.value.multimodalConfig.enabled || !uiState.value.multimodalConfig.vllmModelId) {
       return false
@@ -829,10 +874,28 @@ async function loadModels() {
   }
 }
 
+let parserRefreshSequence = 0
+const parserRulesReady = ref(false)
+
+function ensureBatchParserRules() {
+  if (!parserRulesReady.value || parserStateUnavailable.value) return
+
+  const completed = completeParserEngineRules(
+    batchFileExts.value,
+    editorResources.parserEngines,
+    currentParserRules.value,
+  )
+  if (JSON.stringify(completed) !== JSON.stringify(currentParserRules.value)) {
+    uiState.value.chunkingConfig.parserEngineRules = completed
+  }
+}
+
 watch(
   () => props.visible,
   (visible) => {
     if (!visible) return
+    const refreshSequence = ++parserRefreshSequence
+    parserRulesReady.value = false
     localFiles.value = props.mode === 'file' ? [...(props.files || [])] : []
     localUrls.value = props.mode === 'file' ? [...(props.urls || [])] : []
     initFromKbInfo(props.kbInfo)
@@ -841,6 +904,33 @@ watch(
     }
     activeSection.value = 'overview'
     loadModels()
+    editorResources.ensureParserEngines(true)
+      .then(() => {
+        if (!props.visible || refreshSequence !== parserRefreshSequence) return
+        parserRulesReady.value = true
+        ensureBatchParserRules()
+      })
+      .catch(() => {
+        // The store clears stale engine data and exposes the failed state.
+      })
+  },
+)
+
+watch(
+  () => batchFileExts.value.join('|'),
+  () => ensureBatchParserRules(),
+)
+
+watch(
+  () => [
+    editorResources.parserEnginesLoading,
+    editorResources.parserEnginesLoaded,
+    editorResources.parserEnginesLoadFailed,
+  ],
+  () => {
+    if (!props.visible || parserStateUnavailable.value) return
+    parserRulesReady.value = true
+    ensureBatchParserRules()
   },
 )
 
@@ -917,6 +1007,13 @@ const handleNodeExtractUpdate = (config: UploadUIState['nodeExtractConfig']) => 
 }
 
 const validateBeforeConfirm = (): boolean => {
+  if (batchFileExts.value.length > 0 &&
+      (parserStateUnavailable.value || parserRoutesUnavailable.value.length > 0)) {
+    MessagePlugin.warning(t('knowledgeBase.allFilesSkippedNoEngine'))
+    activeSection.value = 'parser'
+    return false
+  }
+
   if (hasImages.value) {
     if (!uiState.value.multimodalConfig.enabled || !uiState.value.multimodalConfig.vllmModelId) {
       MessagePlugin.warning(t('uploadConfirm.vlmModelRequired'))

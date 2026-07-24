@@ -209,10 +209,12 @@ type ChunkingConfig struct {
 // based on the configured rules. Returns empty string (builtin) when
 // no rule matches.
 func (c ChunkingConfig) ResolveParserEngine(fileType string) string {
+	fileType = strings.TrimPrefix(strings.ToLower(strings.TrimSpace(fileType)), ".")
 	for _, rule := range c.ParserEngineRules {
 		for _, ft := range rule.FileTypes {
-			if ft == fileType {
-				return rule.Engine
+			candidate := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(ft)), ".")
+			if candidate == fileType {
+				return strings.TrimSpace(rule.Engine)
 			}
 		}
 	}

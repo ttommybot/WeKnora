@@ -62,6 +62,9 @@ export const useEditorResourcesStore = defineStore('editorResources', () => {
   const placeholders = ref<PlaceholdersResponse | null>(null)
   const tenantRetrievalConfig = ref<Record<string, unknown> | null>(null)
   const parserEngines = ref<ParserEngineInfo[]>([])
+  const parserEnginesLoading = ref(false)
+  const parserEnginesLoaded = ref(false)
+  const parserEnginesLoadFailed = ref(false)
   const systemInfo = ref<SystemInfo | null>(null)
 
   const loadedAt = ref<Partial<Record<EditorResourceKey, number>>>({})
@@ -158,9 +161,25 @@ export const useEditorResourcesStore = defineStore('editorResources', () => {
 
   async function ensureParserEngines(force = false): Promise<void> {
     return runOnce('parserEngines', force, async () => {
-      const resp = await getParserEngines()
-      parserEngines.value = resp?.data && Array.isArray(resp.data) ? resp.data : []
-      loadedAt.value.parserEngines = Date.now()
+      parserEnginesLoading.value = true
+      parserEnginesLoadFailed.value = false
+      try {
+        const resp = await getParserEngines()
+        parserEngines.value = resp?.data && Array.isArray(resp.data) ? resp.data : []
+        parserEnginesLoaded.value = true
+        loadedAt.value.parserEngines = Date.now()
+      } catch (error) {
+        // Engine availability is live state. Keeping a previous successful
+        // response after a failed refresh can route uploads to a service that
+        // has already gone offline.
+        parserEngines.value = []
+        parserEnginesLoaded.value = false
+        parserEnginesLoadFailed.value = true
+        delete loadedAt.value.parserEngines
+        throw error
+      } finally {
+        parserEnginesLoading.value = false
+      }
     })
   }
 
@@ -198,6 +217,9 @@ export const useEditorResourcesStore = defineStore('editorResources', () => {
       placeholders.value = null
       tenantRetrievalConfig.value = null
       parserEngines.value = []
+      parserEnginesLoading.value = false
+      parserEnginesLoaded.value = false
+      parserEnginesLoadFailed.value = false
       systemInfo.value = null
       inflight.clear()
       return
@@ -220,6 +242,9 @@ export const useEditorResourcesStore = defineStore('editorResources', () => {
     placeholders,
     tenantRetrievalConfig,
     parserEngines,
+    parserEnginesLoading,
+    parserEnginesLoaded,
+    parserEnginesLoadFailed,
     systemInfo,
     ensureStorageEngine,
     resolveUsableStorageProvider,

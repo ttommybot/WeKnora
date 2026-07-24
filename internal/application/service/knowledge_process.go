@@ -1981,19 +1981,6 @@ func (s *knowledgeService) ReparseKnowledge(
 		return nil, err
 	}
 
-	// Allocate a fresh span tree attempt up front. Doing this BEFORE
-	// the cleanup + enqueue means: (a) the UI immediately sees a new
-	// attempt with all five stages back to "pending" instead of the
-	// previous run's "failed" badge lingering; (b) the worker's
-	// fallback path won't double-allocate when payload.Attempt is
-	// already set on the queued task.
-	reparseAttempt := 0
-	if root, n, err := s.tracker().OpenAttempt(ctx, existing.ID, ""); err == nil && root != nil {
-		reparseAttempt = n
-	} else if err != nil {
-		logger.Warnf(ctx, "[Reparse] OpenAttempt failed for %s: %v (will fall back in worker)", existing.ID, err)
-	}
-
 	// Get knowledge base configuration
 	kb, err := s.kbService.GetKnowledgeBaseByID(ctx, existing.KnowledgeBaseID)
 	if err != nil {
@@ -2001,14 +1988,37 @@ func (s *knowledgeService) ReparseKnowledge(
 		return nil, err
 	}
 
+	effectiveProcessOverrides := processOverrides
+	if effectiveProcessOverrides == nil {
+		effectiveProcessOverrides, _ = existing.ProcessOverrides()
+	}
+	parserRouteFileTypes := reparseFileTypes(existing)
+	if existing.Type == "url" || existing.Type == "file_url" {
+		parserRouteFileTypes = nil
+	}
+
 	// When the caller supplies new overrides (e.g. via the reparse confirm
-	// dialog), validate them against this knowledge's file type, then persist
-	// to metadata so both this call's enqueue and the worker re-read the same
-	// config. nil keeps whatever was stored at upload time.
+	// dialog), validate them against this knowledge's file type. The parser
+	// route is also validated when reusing stored overrides, before any new
+	// attempt or destructive cleanup is created.
 	if processOverrides != nil {
 		if err := ValidateProcessOverrides(ctx, kb, processOverrides, reparseFileTypes(existing)); err != nil {
 			return nil, err
 		}
+	}
+	if err := s.validateParserEngineRoutes(
+		ctx,
+		kb,
+		effectiveProcessOverrides,
+		parserRouteFileTypes,
+	); err != nil {
+		return nil, err
+	}
+
+	// Persist caller-supplied overrides only after their complete route has
+	// passed validation so the existing working configuration remains intact
+	// on rejection.
+	if processOverrides != nil {
 		if err := existing.SetProcessOverrides(processOverrides); err != nil {
 			logger.Errorf(ctx, "Failed to set process overrides on reparse: %v", err)
 			return nil, err
@@ -2019,8 +2029,17 @@ func (s *knowledgeService) ReparseKnowledge(
 		}
 	}
 
-	processOverrides, _ = existing.ProcessOverrides()
+	processOverrides = effectiveProcessOverrides
 	reparseEff := ResolveProcessConfig(kb, processOverrides)
+
+	// Allocate the new attempt only after validation and metadata persistence.
+	// This avoids a permanently pending attempt when the route is invalid.
+	reparseAttempt := 0
+	if root, n, err := s.tracker().OpenAttempt(ctx, existing.ID, ""); err == nil && root != nil {
+		reparseAttempt = n
+	} else if err != nil {
+		logger.Warnf(ctx, "[Reparse] OpenAttempt failed for %s: %v (will fall back in worker)", existing.ID, err)
+	}
 
 	// Keep wiki's pending queue consistent across both manual and non-manual
 	// paths. The destructive work (swapping old wiki contributions for new)

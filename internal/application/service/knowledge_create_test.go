@@ -269,6 +269,44 @@ func TestCreateKnowledgeFromFile_PersistsProcessOverrides(t *testing.T) {
 	require.Equal(t, "test", metadataMap["source"])
 }
 
+func TestCreateKnowledgeFromFileRejectsPowerPointBeforeSavingWithoutExplicitRoute(t *testing.T) {
+	t.Parallel()
+
+	repo := &createKnowledgeFileRepoStub{}
+	fileSvc := &createKnowledgeFileServiceStub{}
+	reader := &parserRouteDocumentReaderStub{
+		connected: true,
+		engines: []types.ParserEngineInfo{{
+			Name:      "markitdown",
+			FileTypes: []string{"ppt", "pptx"},
+			Available: true,
+		}},
+	}
+	svc := &knowledgeService{
+		repo:           repo,
+		kbService:      &createKnowledgeFileKBServiceStub{kb: &types.KnowledgeBase{ID: "kb-1"}},
+		fileSvc:        fileSvc,
+		documentReader: reader,
+	}
+
+	knowledge, err := svc.CreateKnowledgeFromFile(
+		newCreateKnowledgeFileContext(),
+		"kb-1",
+		newMultipartFileHeader(t, "slides.pptx", "presentation"),
+		nil,
+		nil,
+		"",
+		nil,
+		"",
+		nil,
+	)
+
+	require.Error(t, err)
+	require.Nil(t, knowledge)
+	require.Zero(t, fileSvc.saveCalls)
+	require.Zero(t, repo.createCalls)
+}
+
 func newCreateKnowledgeFileContext() context.Context {
 	ctx := context.WithValue(context.Background(), types.TenantIDContextKey, uint64(1))
 	ctx = context.WithValue(ctx, types.TenantInfoContextKey, &types.Tenant{})

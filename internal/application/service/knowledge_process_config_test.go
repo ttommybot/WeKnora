@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -10,6 +11,36 @@ import (
 	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/stretchr/testify/require"
 )
+
+type parserRouteDocumentReaderStub struct {
+	connected bool
+	engines   []types.ParserEngineInfo
+	listErr   error
+	listCalls int
+}
+
+func (s *parserRouteDocumentReaderStub) Read(
+	ctx context.Context,
+	req *types.ReadRequest,
+) (*types.ReadResult, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (s *parserRouteDocumentReaderStub) Reconnect(addr string) error {
+	return nil
+}
+
+func (s *parserRouteDocumentReaderStub) IsConnected() bool {
+	return s.connected
+}
+
+func (s *parserRouteDocumentReaderStub) ListEngines(
+	ctx context.Context,
+	overrides map[string]string,
+) ([]types.ParserEngineInfo, error) {
+	s.listCalls++
+	return s.engines, s.listErr
+}
 
 func processConfigBoolPtr(v bool) *bool {
 	return &v
@@ -322,6 +353,111 @@ func TestValidateProcessOverrides_COSIncompleteForImage(t *testing.T) {
 
 	err := ValidateProcessOverrides(ctx, kb, &types.KnowledgeProcessOverrides{}, []string{"png"})
 	require.Error(t, err)
+}
+
+func TestValidateParserEngineRoutes_DefaultBuiltinRejectsPowerPoint(t *testing.T) {
+	t.Parallel()
+
+	reader := &parserRouteDocumentReaderStub{
+		connected: true,
+		engines: []types.ParserEngineInfo{{
+			Name:      "markitdown",
+			FileTypes: []string{"ppt", "pptx"},
+			Available: true,
+		}},
+	}
+	svc := &knowledgeService{documentReader: reader}
+
+	err := svc.validateParserEngineRoutes(
+		context.Background(),
+		&types.KnowledgeBase{},
+		nil,
+		[]string{"pptx"},
+	)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "builtin")
+	require.Contains(t, err.Error(), ".pptx")
+	require.Zero(t, reader.listCalls, "the actual default route is builtin, not any capable engine")
+}
+
+func TestValidateParserEngineRoutes_ExplicitRemoteEnginePasses(t *testing.T) {
+	t.Parallel()
+
+	reader := &parserRouteDocumentReaderStub{
+		connected: true,
+		engines: []types.ParserEngineInfo{{
+			Name:      "markitdown",
+			FileTypes: []string{"ppt", "pptx"},
+			Available: true,
+		}},
+	}
+	svc := &knowledgeService{documentReader: reader}
+	kb := &types.KnowledgeBase{ChunkingConfig: types.ChunkingConfig{
+		ParserEngineRules: []types.ParserEngineRule{{
+			FileTypes: []string{".PPTX"},
+			Engine:    "markitdown",
+		}},
+	}}
+
+	err := svc.validateParserEngineRoutes(
+		context.Background(),
+		kb,
+		nil,
+		[]string{"pptx"},
+	)
+	require.NoError(t, err)
+	require.Equal(t, 1, reader.listCalls)
+}
+
+func TestValidateParserEngineRoutes_ExplicitUnavailableEngineDoesNotFallback(t *testing.T) {
+	t.Parallel()
+
+	reader := &parserRouteDocumentReaderStub{
+		connected: true,
+		engines: []types.ParserEngineInfo{
+			{
+				Name:              "markitdown",
+				FileTypes:         []string{"pptx"},
+				Available:         false,
+				UnavailableReason: "service offline",
+			},
+			{
+				Name:      "another-parser",
+				FileTypes: []string{"pptx"},
+				Available: true,
+			},
+		},
+	}
+	svc := &knowledgeService{documentReader: reader}
+	kb := &types.KnowledgeBase{ChunkingConfig: types.ChunkingConfig{
+		ParserEngineRules: []types.ParserEngineRule{{
+			FileTypes: []string{"pptx"},
+			Engine:    "markitdown",
+		}},
+	}}
+
+	err := svc.validateParserEngineRoutes(
+		context.Background(),
+		kb,
+		nil,
+		[]string{"pptx"},
+	)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "markitdown")
+	require.Contains(t, err.Error(), "service offline")
+}
+
+func TestValidateParserEngineRoutes_SimpleFormatNeedsNoDocReader(t *testing.T) {
+	t.Parallel()
+
+	svc := &knowledgeService{}
+	err := svc.validateParserEngineRoutes(
+		context.Background(),
+		&types.KnowledgeBase{},
+		nil,
+		[]string{"txt"},
+	)
+	require.NoError(t, err)
 }
 
 func TestMergeParserEngineOverrides(t *testing.T) {

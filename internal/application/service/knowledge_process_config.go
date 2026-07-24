@@ -2,10 +2,12 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strings"
 
 	werrors "github.com/Tencent/WeKnora/internal/errors"
+	"github.com/Tencent/WeKnora/internal/infrastructure/docparser"
 	"github.com/Tencent/WeKnora/internal/types"
 )
 
@@ -105,6 +107,132 @@ func ValidateProcessOverrides(
 
 	if err := types.ValidateEffectiveProcessPromptInstructions(eff); err != nil {
 		return werrors.NewBadRequestError(err.Error())
+	}
+
+	return nil
+}
+
+// validateParserEngineRoutes verifies the exact parser route the worker will
+// use for each file type. It runs before files are persisted or existing
+// parsed content is removed, so an invalid/offline route fails synchronously.
+func (s *knowledgeService) validateParserEngineRoutes(
+	ctx context.Context,
+	kb *types.KnowledgeBase,
+	overrides *types.KnowledgeProcessOverrides,
+	fileTypes []string,
+) error {
+	if kb == nil || len(fileTypes) == 0 {
+		return nil
+	}
+
+	eff := ResolveProcessConfig(kb, overrides)
+	tenantOverrides := s.getParserEngineOverridesFromContext(ctx)
+	var uploadOverrides map[string]string
+	if overrides != nil {
+		uploadOverrides = overrides.ParserEngineOverrides
+	}
+	engineOverrides := MergeParserEngineOverrides(tenantOverrides, uploadOverrides)
+
+	if tenant, ok := types.TenantInfoFromContext(ctx); ok {
+		if credentials := tenant.Credentials.GetWeKnoraCloud(); credentials != nil {
+			engineOverrides["weknoracloud_app_id"] = credentials.AppID
+		}
+	} else if s.tenantService != nil {
+		if credentials := s.tenantService.GetWeKnoraCloudCredentials(ctx); credentials != nil {
+			engineOverrides["weknoracloud_app_id"] = credentials.AppID
+		}
+	}
+
+	docreaderConnected := s.documentReader != nil && s.documentReader.IsConnected()
+	var remoteEngines []types.ParserEngineInfo
+	remoteEnginesFetched := false
+	engineCache := make(map[string]types.ParserEngineInfo)
+
+	for _, rawFileType := range fileTypes {
+		fileType := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(rawFileType)), ".")
+		// Generic web pages and manual knowledge do not use the file-extension
+		// parser route validated here.
+		if fileType == "" || fileType == "html" || fileType == "url" || fileType == types.KnowledgeTypeManual {
+			continue
+		}
+
+		engineName := eff.ChunkingConfig.ResolveParserEngine(fileType)
+		if engineName == "" {
+			if docparser.IsSimpleFormat(fileType) {
+				engineName = docparser.SimpleEngineName
+			} else {
+				engineName = "builtin"
+			}
+		}
+
+		engine, cached := engineCache[engineName]
+		found := cached
+		if !cached {
+			engine, found = docparser.GetEngineInfo(
+				engineName,
+				docreaderConnected,
+				engineOverrides,
+				nil,
+			)
+			if !found && docreaderConnected {
+				if !remoteEnginesFetched {
+					var err error
+					remoteEngines, err = s.documentReader.ListEngines(ctx, engineOverrides)
+					if err != nil {
+						return werrors.NewBadRequestError(fmt.Sprintf(
+							"无法检查解析引擎 %s 的状态: %v",
+							engineName,
+							err,
+						))
+					}
+					remoteEnginesFetched = true
+				}
+				engine, found = docparser.GetEngineInfo(
+					engineName,
+					docreaderConnected,
+					engineOverrides,
+					remoteEngines,
+				)
+			}
+			if found {
+				engineCache[engineName] = engine
+			}
+		}
+
+		if !found {
+			return werrors.NewBadRequestError(fmt.Sprintf(
+				"解析引擎 %s 不存在，无法处理 .%s 文件",
+				engineName,
+				fileType,
+			))
+		}
+		if !engine.Available {
+			reason := strings.TrimSpace(engine.UnavailableReason)
+			if reason != "" {
+				reason = ": " + reason
+			}
+			return werrors.NewBadRequestError(fmt.Sprintf(
+				"解析引擎 %s 当前不可用，无法处理 .%s 文件%s",
+				engineName,
+				fileType,
+				reason,
+			))
+		}
+
+		supported := false
+		for _, candidate := range engine.FileTypes {
+			if strings.TrimPrefix(strings.ToLower(strings.TrimSpace(candidate)), ".") == fileType {
+				supported = true
+				break
+			}
+		}
+		if !supported {
+			return werrors.NewBadRequestError(fmt.Sprintf(
+				"解析引擎 %s 不支持 .%s 文件",
+				engineName,
+				fileType,
+			))
+		}
 	}
 
 	return nil

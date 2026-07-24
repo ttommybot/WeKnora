@@ -69,6 +69,7 @@ import { filterUploadFiles } from '../utils/uploadSources'
 const props = withDefaults(defineProps<{
   acceptFileTypes?: string
   supportedFileTypes?: string[]
+  fileUploadDisabled?: boolean
   includeManual?: boolean
   triggerIcon?: string
   triggerClass?: string
@@ -78,6 +79,7 @@ const props = withDefaults(defineProps<{
 }>(), {
   acceptFileTypes: '',
   supportedFileTypes: () => [],
+  fileUploadDisabled: false,
   includeManual: false,
   triggerIcon: 'file-add',
   triggerClass: '',
@@ -106,11 +108,13 @@ const dropdownOptions = computed(() => {
     {
       content: t('upload.uploadDocument'),
       value: 'upload',
+      disabled: props.fileUploadDisabled,
       prefixIcon: () => h(TIcon, { name: 'upload', size: '16px' }),
     },
     {
       content: t('upload.uploadFolder'),
       value: 'uploadFolder',
+      disabled: props.fileUploadDisabled,
       prefixIcon: () => h(TIcon, { name: 'folder-add', size: '16px' }),
     },
     {
@@ -130,6 +134,9 @@ const dropdownOptions = computed(() => {
 })
 
 const handleActionSelect = (data: { value: string }) => {
+  if (props.fileUploadDisabled && (data.value === 'upload' || data.value === 'uploadFolder')) {
+    return
+  }
   switch (data.value) {
     case 'upload':
       fileInputRef.value?.click()

@@ -231,3 +231,55 @@ func ListAllEngines(docreaderConnected bool, overrides map[string]string, remote
 
 	return result
 }
+
+// GetEngineInfo returns the current capability and availability of one parser
+// engine. Unlike ListAllEngines, it only runs the selected local engine's
+// availability check, avoiding unrelated network probes during an upload.
+func GetEngineInfo(
+	name string,
+	docreaderConnected bool,
+	overrides map[string]string,
+	remoteEngines []types.ParserEngineInfo,
+) (types.ParserEngineInfo, bool) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return types.ParserEngineInfo{}, false
+	}
+
+	for _, engine := range localEngines {
+		if engine.Name() != name {
+			continue
+		}
+
+		fileTypes := engine.FileTypes(docreaderConnected)
+		description := engine.Description()
+		for _, remote := range remoteEngines {
+			if remote.Name != name {
+				continue
+			}
+			if len(remote.FileTypes) > 0 {
+				fileTypes = remote.FileTypes
+			}
+			if remote.Description != "" {
+				description = remote.Description
+			}
+			break
+		}
+
+		available, reason := engine.CheckAvailable(docreaderConnected, overrides)
+		return types.ParserEngineInfo{
+			Name:              name,
+			Description:       description,
+			FileTypes:         fileTypes,
+			Available:         available,
+			UnavailableReason: reason,
+		}, true
+	}
+
+	for _, remote := range remoteEngines {
+		if remote.Name == name {
+			return remote, true
+		}
+	}
+	return types.ParserEngineInfo{}, false
+}

@@ -57,6 +57,7 @@ import { listMoveTargets, moveKnowledge, getKnowledgeMoveProgress } from '@/api/
 import { useI18n } from 'vue-i18n';
 import { useMarqueeSelect } from '@/hooks/useMarqueeSelect';
 import type { ParserEngineInfo } from '@/api/system';
+import { getSupportedParserFileTypes } from '@/utils/parserEngines';
 const route = useRoute();
 const { t } = useI18n();
 const kbId = computed(() => (route.params as any).kbId as string || '');
@@ -164,39 +165,20 @@ const missingStorageEngine = computed(() => {
 const parserEngines = computed<ParserEngineInfo[]>(() => editorResources.parserEngines);
 
 const supportedFileTypes = computed<Set<string>>(() => {
-  const engines = parserEngines.value
-  if (!engines.length) return new Set<string>()
-
   const rules: { file_types: string[]; engine: string }[] =
     kbInfo.value?.chunking_config?.parser_engine_rules || []
-
-  const ruleMap = new Map<string, string>()
-  for (const r of rules) {
-    for (const ft of r.file_types) ruleMap.set(ft, r.engine)
-  }
-
-  const available = new Set<string>()
-  const availableEngineNames = new Set(
-    engines.filter(e => e.Available !== false).map(e => e.Name)
-  )
-
-  for (const engine of engines) {
-    for (const ft of engine.FileTypes || []) {
-      if (available.has(ft)) continue
-
-      const explicitEngine = ruleMap.get(ft)
-      if (explicitEngine) {
-        if (availableEngineNames.has(explicitEngine)) available.add(ft)
-      } else {
-        if (engine.Available !== false) available.add(ft)
-      }
-    }
-  }
-  return available
+  return getSupportedParserFileTypes(parserEngines.value, rules)
 })
 
 const acceptFileTypes = computed(() =>
   [...supportedFileTypes.value].map(t => '.' + t).join(',')
+)
+
+const parserFileUploadDisabled = computed(() =>
+  editorResources.parserEnginesLoading ||
+  !editorResources.parserEnginesLoaded ||
+  editorResources.parserEnginesLoadFailed ||
+  supportedFileTypes.value.size === 0
 )
 
 const unsupportedFileTypes = computed<string[]>(() => {
@@ -1042,7 +1024,9 @@ const handleOpenKnowledgeEvent = (e: Event) => {
 
 onMounted(() => {
   loadKnowledgeList();
-  editorResources.ensureParserEngines();
+  editorResources.ensureParserEngines().catch(() => {
+    // The store records the failed state and disables file selection.
+  });
 
   window.addEventListener('knowledgeFileUploaded', handleFileUploaded as EventListener);
   window.addEventListener('openURLImportDialog', handleOpenURLImportDialog as EventListener);
@@ -2223,6 +2207,7 @@ async function createNewSession(value: string): Promise<void> {
                   <div v-if="canEdit" class="doc-filter-actions">
                     <KbUploadSourceDropdown ref="uploadSourceRef" :accept-file-types="acceptFileTypes"
                       :supported-file-types="[...supportedFileTypes]" include-manual trigger-icon="file-add"
+                      :file-upload-disabled="parserFileUploadDisabled"
                       trigger-class="content-bar-icon-btn" data-guide="kb-detail-add-doc"
                       :tooltip="t('knowledgeBase.addDocument')" placement="bottom-right" @files="handleUploadSourceFiles"
                       @url="handleUploadSourceUrl" @manual="handleManualCreate" />

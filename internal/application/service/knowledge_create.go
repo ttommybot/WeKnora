@@ -185,6 +185,15 @@ func (s *knowledgeService) CreateKnowledgeFromFile(ctx context.Context,
 		}
 	}
 
+	if err := s.validateParserEngineRoutes(
+		ctx,
+		kb,
+		processOverrides,
+		[]string{getFileType(safeFilename)},
+	); err != nil {
+		return nil, err
+	}
+
 	// Prepare knowledge record
 	logger.Info(ctx, "Preparing knowledge record")
 	knowledge := &types.Knowledge{
